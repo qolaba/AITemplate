@@ -28,49 +28,13 @@ from src.compile_lib.compile_unet_alt import compile_unet
 from src.compile_lib.compile_vae_alt import compile_vae
 
 
-@click.command()
-@click.option(
-    "--local-dir",
-    default="./tmp/diffusers-pipeline/runwayml/stable-diffusion-v1-5",
-    help="the local diffusers pipeline directory",
-)
-@click.option(
-    "--width",
-    default=(64, 2048),
-    type=(int, int),
-    nargs=2,
-    help="Minimum and maximum width",
-)
-@click.option(
-    "--height",
-    default=(64, 2048),
-    type=(int, int),
-    nargs=2,
-    help="Minimum and maximum height",
-)
-@click.option(
-    "--batch-size",
-    default=(1, 4),
-    type=(int, int),
-    nargs=2,
-    help="Minimum and maximum batch size",
-)
-@click.option("--clip-chunks", default=6, help="Maximum number of clip chunks")
-@click.option(
-    "--include-constants",
-    default=None,
-    help="include constants (model weights) with compiled model",
-)
-@click.option("--use-fp16-acc", default=True, help="use fp16 accumulation")
-@click.option("--convert-conv-to-gemm", default=True, help="convert 1x1 conv to gemm")
-@click.option("--controlnet", default=False, help="UNet for controlnet")
 def compile_diffusers(
-    local_dir,
-    width,
-    height,
-    batch_size,
-    clip_chunks,
-    include_constants,
+    local_dir="./tmp/diffusers-pipeline/stabilityai/stable-diffusion-v2",
+    width=(256,1024),
+    height=(256,1024),
+    batch_size=(1,4),
+    clip_chunks=4,
+    include_constants=None,
     use_fp16_acc=True,
     convert_conv_to_gemm=True,
     controlnet=False,
@@ -132,7 +96,3 @@ def compile_diffusers(
         convert_conv_to_gemm=convert_conv_to_gemm,
         constants=True if include_constants else False,
     )
-
-
-if __name__ == "__main__":
-    compile_diffusers()
