@@ -34,7 +34,7 @@ from diffusers import StableDiffusionPipeline
     default=None,
     help="model",
 )
-def download_pipeline_files(token, save_directory, model) -> None:
+def download_pipeline_files(token, save_directory, model, ckpt) -> None:
     if (model):
         StableDiffusionPipeline.from_pretrained(
             model,
