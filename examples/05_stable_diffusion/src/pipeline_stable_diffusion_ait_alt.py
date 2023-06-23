@@ -695,7 +695,6 @@ class StableDiffusionAITPipeline:
             self.clip_pt = CLIPTextModel.from_pretrained(
                 hf_hub_or_path,
                 subfolder="text_encoder",
-                revision="fp16",
                 torch_dtype=torch.float16,
             ).cuda()
         else:
@@ -725,7 +724,6 @@ class StableDiffusionAITPipeline:
             self.unet_pt = UNet2DConditionModel.from_pretrained(
                 hf_hub_or_path,
                 subfolder="unet",
-                revision="fp16",
                 torch_dtype=torch.float16,
             ).cuda()
             self.unet_pt = self.unet_pt.state_dict()
@@ -748,7 +746,6 @@ class StableDiffusionAITPipeline:
             self.vae_pt = AutoencoderKL.from_pretrained(
                 hf_hub_or_path,
                 subfolder="vae",
-                revision="fp16",
                 torch_dtype=torch.float16,
             ).cuda()
         else:
