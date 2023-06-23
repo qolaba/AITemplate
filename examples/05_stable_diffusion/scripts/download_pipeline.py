@@ -18,31 +18,35 @@ from diffusers import StableDiffusionPipeline
 
 
 @click.command()
+@click.option("--token", default="", help="access token")
 @click.option(
-    "--model-name",
-    default="stabilityai/stable-diffusion-2-1-base",
-    help="Pretrained Model name.",
-)
-@click.option(
-    "--token",
-    default="",
-    help="Valid values: Huggingface user access token, 'true' to use token "
-    "generated with 'huggingface-cli login' (stored in ~/.huggingface) "
-    "or empty string to not use access token (default).",
-)
-@click.option(
-    "--save-directory",
+    "--save_directory",
     default="./tmp/diffusers-pipeline/stabilityai/stable-diffusion-v2",
-    help="Pipeline files local directory.",
+    help="pipeline files local directory",
 )
-def download_pipeline_files(model_name, token, save_directory) -> None:
-
-    StableDiffusionPipeline.from_pretrained(
-        model_name,
-        revision="fp16",
-        torch_dtype=torch.float16,
-        use_auth_token=token if len(token) > 5 else token.lower() == "true",
-    ).save_pretrained(save_directory)
+@click.option(
+    "--model",
+    default=None,
+    help="model",
+)
+@click.option(
+    "--ckpt",
+    default=None,
+    help="model",
+)
+def download_pipeline_files(token, save_directory, model, ckpt) -> None:
+    if (model):
+        StableDiffusionPipeline.from_pretrained(
+            model,
+            torch_dtype=torch.float16,
+            # use provided token or the one generated with `huggingface-cli login``
+        ).save_pretrained(save_directory)
+    else:
+        StableDiffusionPipeline.from_ckpt(
+            ckpt,
+            torch_dtype=torch.float16,
+        # use provided token or the one generated with `huggingface-cli login``
+        ).save_pretrained(save_directory)
 
 
 if __name__ == "__main__":
