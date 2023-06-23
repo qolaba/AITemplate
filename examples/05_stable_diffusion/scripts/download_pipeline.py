@@ -26,15 +26,27 @@ from diffusers import StableDiffusionPipeline
 )
 @click.option(
     "--model",
-    default="stabilityai/stable-diffusion-2-1",
+    default=None,
+    help="model",
+)
+@click.option(
+    "--ckpt",
+    default=None,
     help="model",
 )
 def download_pipeline_files(token, save_directory, model) -> None:
-    StableDiffusionPipeline.from_pretrained(
-        model,
-        torch_dtype=torch.float16,
+    if (model):
+        StableDiffusionPipeline.from_pretrained(
+            model,
+            torch_dtype=torch.float16,
+            # use provided token or the one generated with `huggingface-cli login``
+        ).save_pretrained(save_directory)
+    else:
+        StableDiffusionPipeline.from_ckpt(
+            ckpt,
+            torch_dtype=torch.float16,
         # use provided token or the one generated with `huggingface-cli login``
-    ).save_pretrained(save_directory)
+        ).save_pretrained(save_directory)
 
 
 if __name__ == "__main__":
