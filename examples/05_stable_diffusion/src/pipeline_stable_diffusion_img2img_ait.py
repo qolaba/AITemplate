@@ -17,6 +17,9 @@
 import inspect
 import os
 from typing import List, Optional, Union
+import re
+from .compile_lib.compile_vae_alt import map_vae
+from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionModel
 
 import numpy as np
 
@@ -37,6 +40,7 @@ from diffusers.pipelines.stable_diffusion import (
     StableDiffusionSafetyChecker,
 )
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer
 
 
 def preprocess(image):
@@ -49,6 +53,52 @@ def preprocess(image):
     return 2.0 * image - 1.0
 
 
+def map_unet_state_dict(state_dict, dim=320):
+    params_ait = {}
+    for key, arr in state_dict.items():
+        arr = arr.to("cuda", dtype=torch.float16)
+        if len(arr.shape) == 4:
+            arr = arr.permute((0, 2, 3, 1)).contiguous()
+        elif key.endswith("ff.net.0.proj.weight"):
+            # print("ff.net.0.proj.weight")
+            w1, w2 = arr.chunk(2, dim=0)
+            params_ait[key.replace(".", "_")] = w1
+            params_ait[key.replace(".", "_").replace("proj", "gate")] = w2
+            continue
+        elif key.endswith("ff.net.0.proj.bias"):
+            # print("ff.net.0.proj.bias")
+            w1, w2 = arr.chunk(2, dim=0)
+            params_ait[key.replace(".", "_")] = w1
+            params_ait[key.replace(".", "_").replace("proj", "gate")] = w2
+            continue
+        params_ait[key.replace(".", "_")] = arr
+
+    params_ait["arange"] = (
+        torch.arange(start=0, end=dim // 2, dtype=torch.float32).cuda().half()
+    )
+    return params_ait
+
+
+def map_clip_state_dict(state_dict):
+    params_ait = {}
+    for key, arr in state_dict.items():
+        arr = arr.to("cuda", dtype=torch.float16)
+        name = key.replace("text_model.", "")
+        ait_name = name.replace(".", "_")
+        if name.endswith("out_proj.weight"):
+            ait_name = ait_name.replace("out_proj", "proj")
+        elif name.endswith("out_proj.bias"):
+            ait_name = ait_name.replace("out_proj", "proj")
+        elif "q_proj" in name:
+            ait_name = ait_name.replace("q_proj", "proj_q")
+        elif "k_proj" in name:
+            ait_name = ait_name.replace("k_proj", "proj_k")
+        elif "v_proj" in name:
+            ait_name = ait_name.replace("v_proj", "proj_v")
+        params_ait[ait_name] = arr
+
+    return params_ait
+# class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
 class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
     r"""
     Pipeline for text-guided image to image generation using Stable Diffusion.
@@ -108,17 +158,85 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
         )
-
+        # self.device = torch.device("cuda")
         workdir = "tmp/"
+        state_dict = None
+
         self.clip_ait_exe = self.init_ait_module(
             model_name="CLIPTextModel", workdir=workdir
         )
+        print("Loading PyTorch CLIP")
+        # if ckpt is None:
+        #     self.clip_pt = CLIPTextModel.from_pretrained(
+        #         hf_hub_or_path,
+        #         subfolder="text_encoder",
+        #         revision="fp16",
+        #         torch_dtype=torch.float16,
+        #     ).cuda()
+        hf_hub_or_path="./tmp/diffusers-pipeline/stabilityai/stable-diffusion-v2"
+        ckpt=None
+        self.clip_pt = CLIPTextModel.from_pretrained(
+                hf_hub_or_path,
+                subfolder="text_encoder",
+                revision="fp16",
+                torch_dtype=torch.float16,
+            ).cuda()
+        
+        clip_params_ait = map_clip_state_dict(dict(self.clip_pt.named_parameters()))
+        print("Setting constants")
+        self.clip_ait_exe.set_many_constants_with_tensors(clip_params_ait)
+        print("Folding constants")
+        self.clip_ait_exe.fold_constants()
+        # cleanup
+        self.clip_pt = None
+        clip_params_ait = None
+
         self.unet_ait_exe = self.init_ait_module(
             model_name="UNet2DConditionModel", workdir=workdir
         )
+
+        print("Loading PyTorch UNet")
+        self.unet_pt = UNet2DConditionModel.from_pretrained(
+                hf_hub_or_path,
+                subfolder="unet",
+                revision="fp16",
+                torch_dtype=torch.float16,
+            ).cuda()
+        self.unet_pt = self.unet_pt.state_dict()
+        unet_params_ait = map_unet_state_dict(self.unet_pt)
+        print("Setting constants")
+        self.unet_ait_exe.set_many_constants_with_tensors(unet_params_ait)
+        print("Folding constants")
+        self.unet_ait_exe.fold_constants()
+        # cleanup
+        self.unet_pt = None
+        unet_params_ait = None
+
         self.vae_ait_exe = self.init_ait_module(
             model_name="AutoencoderKL", workdir=workdir
         )
+        print("Loading PyTorch VAE")
+        self.vae_pt = AutoencoderKL.from_pretrained(
+                hf_hub_or_path,
+                subfolder="vae",
+                revision="fp16",
+                torch_dtype=torch.float16,
+            ).cuda()
+
+        print("Mapping parameters...")
+        vae_params_ait = map_vae(self.vae_pt)
+        print("Setting constants")
+        self.vae_ait_exe.set_many_constants_with_tensors(vae_params_ait)
+        print("Folding constants")
+        self.vae_ait_exe.fold_constants()
+        # cleanup
+        self.vae_pt = None
+        vae_params_ait = None
+
+        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        # self.scheduler = PNDMScheduler.from_pretrained(
+        #     hf_hub_or_path, subfolder="scheduler"
+        # )
         self.batch = 1
 
     def init_ait_module(
@@ -129,9 +247,11 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
         mod = Model(os.path.join(workdir, model_name, "test.so"))
         return mod
 
-    def unet_inference(self, latent_model_input, timesteps, encoder_hidden_states):
+    def unet_inference(
+        self, latent_model_input, timesteps, encoder_hidden_states, height, width
+    ):
         exe_module = self.unet_ait_exe
-        timesteps_pt = timesteps.expand(latent_model_input.shape[0])
+        timesteps_pt = timesteps.expand(self.batch * 2)
         inputs = {
             "input0": latent_model_input.permute((0, 2, 3, 1))
             .contiguous()
@@ -145,6 +265,8 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
         for i in range(num_outputs):
             shape = exe_module.get_output_maximum_shape(i)
             shape[0] = self.batch * 2
+            shape[1] = height // 8
+            shape[2] = width // 8
             ys.append(torch.empty(shape).cuda().half())
         exe_module.run_with_tensors(inputs, ys, graph_mode=False)
         noise_pred = ys[0].permute((0, 3, 1, 2)).float()
@@ -167,7 +289,7 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
         exe_module.run_with_tensors(inputs, ys, graph_mode=False)
         return ys[0].float()
 
-    def vae_inference(self, vae_input):
+    def vae_inference(self, vae_input, height, width):
         exe_module = self.vae_ait_exe
         inputs = [torch.permute(vae_input, (0, 2, 3, 1)).contiguous().cuda().half()]
         ys = []
@@ -175,6 +297,8 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
         for i in range(num_outputs):
             shape = exe_module.get_output_maximum_shape(i)
             shape[0] = self.batch
+            shape[1] = height
+            shape[2] = width
             ys.append(torch.empty(shape).cuda().half())
         exe_module.run_with_tensors(inputs, ys, graph_mode=False)
         vae_out = ys[0].permute((0, 3, 1, 2)).float()
@@ -263,7 +387,8 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
             extra_set_kwargs["offset"] = 1
 
         self.scheduler.set_timesteps(num_inference_steps, **extra_set_kwargs)
-
+        height=init_image.height
+        width=init_image.width
         if isinstance(init_image, PIL.Image.Image):
             init_image = preprocess(init_image)
 
@@ -339,7 +464,6 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
             extra_step_kwargs["eta"] = eta
 
         latents = init_latents
-
         t_start = max(num_inference_steps - init_timestep + offset, 0)
         for i, t in enumerate(self.progress_bar(self.scheduler.timesteps[t_start:])):
             t_index = t_start + i
@@ -359,7 +483,7 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
 
             # predict the noise residual
             noise_pred = self.unet_inference(
-                latent_model_input, t, encoder_hidden_states=text_embeddings
+                latent_model_input, t, encoder_hidden_states=text_embeddings, height=height, width=width
             )
 
             # perform guidance
@@ -381,7 +505,7 @@ class StableDiffusionImg2ImgAITPipeline(StableDiffusionImg2ImgPipeline):
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
-        image = self.vae_inference(latents)
+        image = self.vae_inference(latents, height=height, width=width)
 
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
